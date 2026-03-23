@@ -1,0 +1,9 @@
+tushare>=1.2.89
+akshare>=1.12.0
+pandas>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+mplfinance>=0.12.10b0
+streamlit>=1.35.0
+stqdm>=0.1.0
+

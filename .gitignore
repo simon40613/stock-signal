@@ -1,0 +1,23 @@
+# Token & 本地配置（绝对不能上传）
+~/.stock_signal/
+
+# 本地数据 & 日志
+data/
+logs/
+*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
