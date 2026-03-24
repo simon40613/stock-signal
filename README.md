@@ -1,6 +1,6 @@
 # Stock Signal 📈
 
-> 基于 Python 的 A 股辅助决策系统，支持股票筛选、持仓分析、可视化看板。
+> 基于 Python 的 A 股辅助决策系统，支持股票筛选、持仓分析、上市公司资讯抓取与可视化看板。
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.35+-red)
@@ -17,6 +17,7 @@
 | **可视化看板** | K线图 + 均线 + 操作信号卡片，颜色直观（涨红跌绿） |
 | **自选股管理** | 增删自选股，记录仓位，一键导入筛选结果 |
 | **多数据源** | 支持 Tushare Pro（主）/ AKShare（免费备用），引导配置 Token |
+| **资讯抓取 🆕** | 自动爬取东方财富最新公告/新闻，在持仓页和筛选结果中同步展示 |
 
 ---
 
@@ -67,10 +68,11 @@ stock-signal/
 ├── requirements.txt
 ├── .gitignore
 ├── core/
-│   ├── data_source.py  # 数据源封装（Tushare / AKShare）
-│   ├── analyzer.py     # 分析逻辑（评分、信号、确认）
-│   ├── screener.py     # 筛选模块
-│   └── watchlist.py    # 自选股管理
+│   ├── data_source.py   # 数据源封装（Tushare / AKShare）
+│   ├── analyzer.py      # 分析逻辑（评分、信号、确认）
+│   ├── screener.py      # 筛选模块
+│   ├── watchlist.py     # 自选股管理
+│   └── news_crawler.py  # 资讯爬取（东方财富）🆕
 └── data/             # 本地数据（不上传）
 ```
 
@@ -92,8 +94,8 @@ stock-signal/
 
 ## 🗺️ 版本计划
 
-- **V1.0（当前）** — 技术面分析 + 可视化看板
-- **V2.0（计划中）** — 爬虫模块，抓取上市公司公告/资讯，与技术信号结合
+- **V1.0** — 技术面分析 + 可视化看板
+- **V2.0（当前）** — 爬虫模块，抓取东方财富上市公司公告/资讯，持仓页和筛选页同步展示
 
 ---
 
@@ -110,4 +112,5 @@ MIT
 ---
 
 > 本项目在开发过程中借助 AI（WorkBuddy）辅助代码生成与架构设计。
+
 

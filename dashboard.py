@@ -20,6 +20,7 @@ from core.watchlist import (
     get_watchlist, add_stock, remove_stock,
     update_position, import_from_list
 )
+from core.news_crawler import fetch_news, fetch_news_batch
 
 
 # ── 中文字体设置 ──────────────────────────────────────────
@@ -265,6 +266,20 @@ def main():
                     if new_pos != position:
                         update_position(ts_code, new_pos)
 
+                    # 最近资讯
+                    with st.expander(f"📰 {name or ts_code} 最近资讯", expanded=False):
+                        with st.spinner("加载资讯..."):
+                            news_list = fetch_news(ts_code, limit=3)
+                        if not news_list:
+                            st.caption("暂无相关资讯")
+                        else:
+                            for news in news_list:
+                                st.markdown(
+                                    f"• [{news['title']}]({news['url']})  "
+                                    f"<span style='color:#999;font-size:12px'>{news['time']} · {news['source']}</span>",
+                                    unsafe_allow_html=True
+                                )
+
                     st.markdown("---")
 
                 except Exception as e:
@@ -325,6 +340,28 @@ def main():
                         ),
                         use_container_width=True
                     )
+
+                    # 候选股资讯展示
+                    st.markdown("### 📰 候选股资讯")
+                    st.caption("点击展开查看各股最近资讯（来源：东方财富）")
+                    with st.spinner("批量拉取资讯，请稍候..."):
+                        news_map = fetch_news_batch(
+                            df_top["股票代码"].tolist(), limit=3, delay=0.3
+                        )
+                    for _, row in df_top.iterrows():
+                        code = row["股票代码"]
+                        sname = row["股票名称"]
+                        news_list = news_map.get(code, [])
+                        with st.expander(f"📌 {code} {sname}", expanded=False):
+                            if not news_list:
+                                st.caption("暂无相关资讯")
+                            else:
+                                for news in news_list:
+                                    st.markdown(
+                                        f"• [{news['title']}]({news['url']})  "
+                                        f"<span style='color:#999;font-size:12px'>{news['time']} · {news['source']}</span>",
+                                        unsafe_allow_html=True
+                                    )
 
                     st.markdown("---")
                     selected = st.multiselect(
