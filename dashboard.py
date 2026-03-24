@@ -235,7 +235,7 @@ def plot_radar(trend: float, momentum: float, volume_score: float) -> plt.Figure
 
     # 用 BytesIO 固定宽度渲染，避免被 Streamlit 列撑大
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=80, bbox_inches="tight",
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
                 facecolor="none", transparent=True)
     buf.seek(0)
     plt.close(fig)
@@ -268,7 +268,7 @@ def plot_mini_kline(df: pd.DataFrame, ts_code: str) -> io.BytesIO:
     fig.tight_layout(pad=0.5)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=80, bbox_inches="tight",
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
                 facecolor="white", edgecolor="none")
     buf.seek(0)
     plt.close(fig)
