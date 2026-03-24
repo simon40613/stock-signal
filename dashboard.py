@@ -96,7 +96,11 @@ def sidebar():
         "section[data-testid='stSidebar'] .stTextInput input {"
         "  border: 1.5px solid #555 !important;"
         "  border-radius: 6px;"
-        "  background: #fff;"
+        "  background: #3a3a3a !important;"
+        "  color: #e0e0e0 !important;"
+        "}"
+        "section[data-testid='stSidebar'] .stTextInput input::placeholder {"
+        "  color: #999 !important;"
         "}"
         "</style>",
         unsafe_allow_html=True
@@ -209,44 +213,52 @@ def plot_kline(df: pd.DataFrame, ts_code: str, title: str = "") -> plt.Figure:
 # ─────────────────────────────────────────────────────────
 # 评分雷达图
 # ─────────────────────────────────────────────────────────
-def plot_radar(trend: float, momentum: float, volume_score: float) -> plt.Figure:
+def plot_radar(trend: float, momentum: float, volume_score: float) -> io.BytesIO:
     """
-    绘制三维度评分雷达图（紧凑版，带数值标注）
+    绘制三维度评分雷达图（极坐标，动态最大值）。
     """
+    # 设置中文字体
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS"]
+    plt.rcParams["axes.unicode_minus"] = False
+
     categories = ["趋势", "动能", "成交量"]
-    values = [trend, momentum, volume_score]
+    values     = [trend, momentum, volume_score]
     values_closed = values + [values[0]]
+
+    raw_max = max(values + [1])
+    dyn_max = max(20, int(np.ceil(raw_max / 10) * 10))
 
     angles = np.linspace(0, 2 * np.pi, len(categories), endpoint=False).tolist()
     angles_closed = angles + [angles[0]]
+    dyn_ticks = [dyn_max * p for p in [0.25, 0.5, 0.75, 1.0]]
 
-    fig, ax = plt.subplots(figsize=(2.2, 2.2), subplot_kw=dict(polar=True))
-    ax.fill(angles_closed, values_closed, color=COLOR_UP, alpha=0.25)
-    ax.plot(angles_closed, values_closed, color=COLOR_UP, linewidth=2)
+    fig = plt.figure(figsize=(3.6, 3.6), facecolor="black")
+    ax  = fig.add_subplot(111, polar=True, facecolor="black")
+    ax.fill(angles_closed, values_closed, color=COLOR_UP, alpha=0.30)
+    ax.plot(angles_closed, values_closed, color=COLOR_UP, linewidth=3.5)
     ax.set_xticks(angles)
-    ax.set_xticklabels(categories, fontsize=9)
-    ax.set_ylim(0, 100)
-    ax.set_yticks([25, 50, 75, 100])
-    ax.tick_params(axis="y", labelsize=7)
+    ax.set_xticklabels(categories, fontsize=13, color="#eeeeee", fontweight="bold")
+    ax.set_ylim(0, dyn_max)
+    ax.set_yticks(dyn_ticks)
+    ax.tick_params(axis="y", labelsize=9, colors="#aaaaaa")
+    ax.spines["polar"].set_color("#666666")
+    ax.grid(color="#444444", linewidth=0.8)
 
-    # 每个轴端点标注分数
-    for angle, val, cat in zip(angles, values, categories):
+    # 端点标注分数
+    for angle, val in zip(angles, values):
         ax.annotate(
             f"{val:.0f}",
             xy=(angle, val),
-            xytext=(angle, val + 8),
+            xytext=(angle, dyn_max * 0.88),
             textcoords="data",
-            fontsize=9,
-            ha="center",
-            fontweight="bold",
+            fontsize=13, fontweight="bold",
+            ha="center", va="center",
             color=COLOR_UP,
+            clip_on=False,
         )
-    fig.tight_layout(pad=0.3)
 
-    # 用 BytesIO 固定宽度渲染，避免被 Streamlit 列撑大
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
-                facecolor="none", transparent=True)
+    fig.savefig(buf, format="png", dpi=200, facecolor="black")
     buf.seek(0)
     plt.close(fig)
     return buf
@@ -344,7 +356,7 @@ def action_card(ts_code: str, name: str, result: dict, position: float, df: pd.D
             if kline_buf:
                 st.image(kline_buf, use_container_width=True)
         with col_radar:
-            st.image(radar_buf, use_container_width=True)
+            st.image(radar_buf, width=200)
 
 
 # ─────────────────────────────────────────────────────────
@@ -389,6 +401,74 @@ def main():
         st.stop()
 
     tab1, tab2, tab3 = st.tabs(["📊 自选股分析", "🔍 今日筛选", "📈 K线详情"])
+
+    # ─────────────────────────────────────────────────────────
+    # 渲染筛选结果的函数（被缓存分支和新鲜计算共用）
+    # ─────────────────────────────────────────────────────────
+    def _render_filter_results(df_top: pd.DataFrame):
+        def _color_score(val, max_val=100):
+            if val >= 75:   return "background:rgba(229,57,53,0.35);color:#c62828;font-weight:700"
+            if val >= 50:   return "background:rgba(251,140,0,0.3);color:#e65100;font-weight:600"
+            if val >= 25:   return "background:rgba(253,216,53,0.3);color:#555;font-weight:500"
+            if val > 0:     return "background:rgba(129,199,132,0.3);color:#2e7d32;font-weight:400"
+            return "color:#999"
+
+        news_map = cached_news_batch(df_top["股票代码"].tolist())
+
+        for _, row in df_top.iterrows():
+            code = row["股票代码"];  sname = row["股票名称"]
+            trend = row["趋势分"];  mom = row["动能分"];  vol = row["成交量分"]
+            final = row["最终评分"]
+
+            # 信息行
+            c1, c2, c3, c4, c5, c6 = st.columns([1.2, 1.2, 0.9, 0.9, 0.9, 1.2])
+            c1.markdown(f"**{code}**  {sname}")
+            c2.metric("收盘价", f"¥{row['收盘价']:.2f}")
+            c3.markdown(f"<div style='text-align:center;padding:4px 0'>"
+                        f"<div style='background:#e53935;color:white;border-radius:4px;padding:2px 6px;font-size:12px'>{trend:.0f}分</div>"
+                        f"<small>趋势</small></div>", unsafe_allow_html=True)
+            c4.markdown(f"<div style='text-align:center;padding:4px 0'>"
+                        f"<div style='background:#fb8c00;color:white;border-radius:4px;padding:2px 6px;font-size:12px'>{mom:.0f}分</div>"
+                        f"<small>动能</small></div>", unsafe_allow_html=True)
+            c5.markdown(f"<div style='text-align:center;padding:4px 0'>"
+                        f"<div style='background:#1565c0;color:white;border-radius:4px;padding:2px 6px;font-size:12px'>{vol:.0f}分</div>"
+                        f"<small>成交量</small></div>", unsafe_allow_html=True)
+            c6.markdown(f"<div style='text-align:center;padding:4px 0'>"
+                        f"<div style='background:#b71c1c;color:white;border-radius:6px;padding:6px 10px;font-size:15px;font-weight:bold'>{final:.1f}分</div>"
+                        f"<small>综合评分</small></div>", unsafe_allow_html=True)
+
+            # 按钮行
+            col_btn, col_news = st.columns([1, 3])
+            if col_btn.button(f"⭐ 加入自选", key=f"add_{code}"):
+                add_stock(code, sname)
+                col_btn.success(f"✅ 已加入 {sname}")
+            with col_news.expander(f"📰 {code} {sname} 最新资讯", expanded=False):
+                all_news  = news_map.get(code, [])
+                news_list = _filter_news(all_news, news_filter)
+                if not news_list:
+                    st.caption("暂无相关资讯")
+                else:
+                    for n in news_list:
+                        st.markdown(
+                            f"• [{n['title']}]({n['url']})  "
+                            f"<span style='color:#999;font-size:12px'>{n['time']} · {n['source']}</span>",
+                            unsafe_allow_html=True
+                        )
+            st.markdown("---")
+
+        csv = df_top.to_csv(index=False, encoding="utf-8-sig")
+        st.download_button("💾 下载筛选结果 CSV", csv,
+                           file_name=f"screening_{datetime.date.today()}.csv",
+                           mime="text/csv")
+
+
+    # 初始化筛选结果缓存（跨 rerun 持久化）
+    if "filter_done" not in st.session_state:
+        st.session_state["filter_done"] = False
+    if "filter_df" not in st.session_state:
+        st.session_state["filter_df"] = None
+    if "filter_triggered" not in st.session_state:
+        st.session_state["filter_triggered"] = False
 
     # ────────────────────────────────────────
     # Tab1：自选股分析
@@ -524,20 +604,31 @@ def main():
         w_vol    = wc3.number_input("成交量权重", 10, 60, 30, 5)
         weights  = {"trend": w_trend, "momentum": w_mom, "volume": w_vol}
 
+        # ── 有缓存时：直接展示（rerun 后不会丢失）───
+        if st.session_state["filter_done"] and st.session_state["filter_df"] is not None:
+            df_top = st.session_state["filter_df"]
+            st.success(f"📋 筛选结果（共 {len(df_top)} 只）")
+            _render_filter_results(df_top)
+            st.divider()
+
+        # 用标志位判断按钮是否被点击（比 st.button 返回值更可靠）
         if st.button("🚀 开始筛选", type="primary"):
+            st.session_state["filter_triggered"] = True
+
+        if st.session_state.get("filter_triggered"):
+            st.session_state["filter_triggered"] = False  # 重置标志
             try:
-                # 获取股票池
                 df_basic = provider.get_stock_list(exchange="SSE", prefix="6")
                 sample_n = min(sample_size, len(df_basic))
                 sample_df = df_basic.sample(n=sample_n, random_state=None).reset_index(drop=True)
                 total_n = len(sample_df)
 
-                # 导入分析函数（避免顶层循环引用）
                 from core.analyzer import score_stock as _score_fn
                 results = []
 
-                # stqdm 带进度条遍历
-                for _, row in stqdm(sample_df.iterrows(), total=total_n, desc="📊 股票评分中"):
+                # 用 st.progress 替代 stqdm + spinner
+                progress_bar = st.progress(0, text="📊 股票评分中...")
+                for i, (_, row) in enumerate(sample_df.iterrows()):
                     ts_code = row["ts_code"]
                     try:
                         df_daily = provider.get_daily(ts_code)
@@ -547,103 +638,17 @@ def main():
                             results.append({"股票代码": ts_code, "股票名称": row["name"], **score})
                     except Exception:
                         pass
+                    progress_bar.progress((i + 1) / total_n, text=f"📊 股票评分中... {(i+1)*100//total_n}%")
+                progress_bar.empty()
 
                 if not results:
                     st.error("筛选结果为空")
                 else:
                     df_result = pd.DataFrame(results)
                     df_top = df_result.sort_values("最终评分", ascending=False).head(top_n).reset_index(drop=True)
-
-                    st.success(f"✅ 筛选完成，共找到 {len(df_top)} 只候选股")
-                    display_cols = ["股票代码", "股票名称", "收盘价", "5日涨幅%", "量比", "趋势分", "动能分", "成交量分", "最终评分"]
-
-                    # 评分热力：分数越高越红（涨），越低越绿（跌）
-                    def _color_score(val, max_val=100):
-                        if val >= 75:
-                            color = "#e53935"
-                            weight = 900
-                        elif val >= 50:
-                            color = "#fb8c00"
-                            weight = 600
-                        elif val >= 25:
-                            color = "#fdd835"
-                            weight = 400
-                        elif val > 0:
-                            color = "#81c784"
-                            weight = 400
-                        else:
-                            return "color:#999;font-weight:400"
-                        intensity = min(val / max_val, 1.0)
-                        r = int(229 - intensity * (229 - 100))
-                        g = int(57 - intensity * (57 - 193))
-                        b = int(53 - intensity * (53 - 120))
-                        return f"background:rgba({r},{g},{b},0.3);color:#333;font-weight:{weight}"
-                    score_cols = ["趋势分", "动能分", "成交量分", "最终评分"]
-
-                    def style_row(row):
-                        attrs = {}
-                        for col in score_cols:
-                            val = row.get(col, 0)
-                            attrs[col] = _color_score(val)
-                        return attrs
-
-                    # 候选股资讯批量缓存
-                    news_map = cached_news_batch(df_top["股票代码"].tolist())
-
-                    # 逐行展示：卡片 + 热力 + 一键加入按钮
-                    for _, row in df_top.iterrows():
-                        code = row["股票代码"]
-                        sname = row["股票名称"]
-                        trend = row["趋势分"]
-                        mom = row["动能分"]
-                        vol = row["成交量分"]
-                        final = row["最终评分"]
-
-                        with st.container():
-                            c1, c2, c3, c4, c5, c6 = st.columns([1.2, 1.2, 0.9, 0.9, 0.9, 1.2])
-                            c1.markdown(f"**{code}**  {sname}")
-                            c2.metric("收盘价", f"¥{row['收盘价']:.2f}")
-                            c3.markdown(f"<div style='text-align:center;padding:4px 0'>"
-                                        f"<div style='background:#e53935;color:white;border-radius:4px;padding:2px 6px;font-size:12px'>{trend:.0f}分</div>"
-                                        f"<small>趋势</small></div>", unsafe_allow_html=True)
-                            c4.markdown(f"<div style='text-align:center;padding:4px 0'>"
-                                        f"<div style='background:#fb8c00;color:white;border-radius:4px;padding:2px 6px;font-size:12px'>{mom:.0f}分</div>"
-                                        f"<small>动能</small></div>", unsafe_allow_html=True)
-                            c5.markdown(f"<div style='text-align:center;padding:4px 0'>"
-                                        f"<div style='background:#1565c0;color:white;border-radius:4px;padding:2px 6px;font-size:12px'>{vol:.0f}分</div>"
-                                        f"<small>成交量</small></div>", unsafe_allow_html=True)
-                            c6.markdown(f"<div style='text-align:center;padding:4px 0'>"
-                                        f"<div style='background:#b71c1c;color:white;border-radius:6px;padding:6px 10px;font-size:15px;font-weight:bold'>{final:.1f}分</div>"
-                                        f"<small>综合评分</small></div>", unsafe_allow_html=True)
-
-                        # 按钮行：加入自选 + 资讯折叠
-                        col_btn, col_news = st.columns([1, 3])
-                        if col_btn.button(f"⭐ 加入自选", key=f"add_{code}"):
-                            add_stock(code, sname)
-                            col_btn.success(f"✅ 已加入 {sname}")
-                        with col_news.expander(f"📰 {code} {sname} 最新资讯", expanded=False):
-                            all_news = news_map.get(code, [])
-                            news_list = _filter_news(all_news, news_filter)
-                            if not news_list:
-                                st.caption("暂无相关资讯")
-                            else:
-                                for news in news_list:
-                                    st.markdown(
-                                        f"• [{news['title']}]({news['url']})  "
-                                        f"<span style='color:#999;font-size:12px'>{news['time']} · {news['source']}</span>",
-                                        unsafe_allow_html=True
-                                    )
-                        st.markdown("---")
-
-                    # 下载 CSV
-                    csv = df_top.to_csv(index=False, encoding="utf-8-sig")
-                    st.download_button(
-                        "💾 下载筛选结果 CSV",
-                        csv,
-                        file_name=f"screening_{datetime.date.today()}.csv",
-                        mime="text/csv"
-                    )
-
+                    st.session_state["filter_df"]   = df_top
+                    st.session_state["filter_done"] = True
+                    st.rerun()
             except Exception as e:
                 st.error(f"筛选出错：{e}")
 
@@ -688,7 +693,7 @@ def main():
                             radar_buf = plot_radar(
                                 scores["趋势分"], scores["动能分"], scores["成交量分"]
                             )
-                            st.image(radar_buf, use_container_width=True)
+                            st.image(radar_buf, width=210)
 
                         with col_metrics:
                             m1, m2, m3, m4 = st.columns(4)
