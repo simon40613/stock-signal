@@ -25,6 +25,25 @@ from core.watchlist import (
 from core.news_crawler import fetch_news, fetch_news_batch
 
 
+# ─────────────────────────────────────────────────────────
+# 股票代码标准化：自动补全 .SH / .SZ 后缀
+# 例如：输入 600036 → 600036.SH，000001 → 000001.SZ
+# ─────────────────────────────────────────────────────────
+def normalize_ts_code(raw: str) -> str:
+    """将简码或混合格式的股票代码转为标准 Tushare 格式"""
+    code = raw.strip().upper()
+    # 去掉已有的后缀
+    if code.endswith(".SH") or code.endswith(".SZ"):
+        return code
+    # 纯数字，根据开头判断市场
+    if code.isdigit():
+        if code.startswith("6") or code.startswith("9"):
+            return f"{code}.SH"
+        else:
+            return f"{code}.SZ"
+    return code
+
+
 # ── 中文字体设置 ──────────────────────────────────────────
 matplotlib.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "Arial Unicode MS"]
 matplotlib.rcParams["axes.unicode_minus"] = False
@@ -100,11 +119,12 @@ def sidebar():
 
     # 自选股管理
     st.sidebar.subheader("⭐ 自选股管理")
-    new_code = st.sidebar.text_input("添加股票代码（如 600036.SH）")
+    new_code = st.sidebar.text_input("添加股票代码（输入纯数字即可，如 600036）")
     new_name = st.sidebar.text_input("股票名称（可选）")
     if st.sidebar.button("➕ 添加"):
         if new_code:
-            add_stock(new_code.strip().upper(), new_name.strip())
+            ts_code = normalize_ts_code(new_code)
+            add_stock(ts_code, new_name.strip())
             st.sidebar.success(f"已添加 {new_code}")
             st.rerun()
 
@@ -520,10 +540,10 @@ def main():
 
         watchlist = get_watchlist()
         options = [""] + [f"{s['ts_code']} {s['name']}" for s in watchlist]
-        manual  = st.text_input("或直接输入股票代码（如 600036.SH）")
+        manual  = st.text_input("或直接输入股票代码（输入纯数字即可，如 600036）")
         select  = st.selectbox("选择自选股", options)
 
-        ts_code = manual.strip().upper() if manual.strip() else (select.split()[0] if select else "")
+        ts_code = normalize_ts_code(manual) if manual.strip() else (select.split()[0] if select else "")
         title   = select if select else ts_code
 
         if ts_code:
