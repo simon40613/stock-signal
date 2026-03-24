@@ -150,9 +150,19 @@ def sidebar():
                 st.rerun()
 
     st.sidebar.markdown("---")
+    # 资讯来源筛选
+    st.sidebar.subheader("🔍 资讯筛选")
+    news_source_filter = st.sidebar.multiselect(
+        "只看指定来源（留空为全部）",
+        options=["东方财富", "财联社", "证券时报", "上海证券报", "中国证券网"],
+        default=[],
+        format_func=lambda x: x
+    )
+
+    st.sidebar.markdown("---")
     st.sidebar.caption(f"更新时间：{datetime.datetime.now().strftime('%H:%M:%S')}")
 
-    return load_config()
+    return load_config(), news_source_filter
 
 
 # ─────────────────────────────────────────────────────────
@@ -342,19 +352,26 @@ def action_card(ts_code: str, name: str, result: dict, position: float, df: pd.D
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_news(ts_code: str) -> list:
-    return fetch_news(ts_code, limit=3)
+    return fetch_news(ts_code, limit=5)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_news_batch(ts_codes: list) -> dict:
-    return fetch_news_batch(ts_codes, limit=3, delay=0.2)
+    return fetch_news_batch(ts_codes, limit=5, delay=0.2)
+
+
+def _filter_news(news_list: list, sources: list) -> list:
+    """根据来源筛选新闻，sources 为空时返回全部"""
+    if not sources:
+        return news_list
+    return [n for n in news_list if any(s in n.get("source", "") for s in sources)]
 
 
 # ─────────────────────────────────────────────────────────
 # 主页面
 # ─────────────────────────────────────────────────────────
 def main():
-    cfg = sidebar()
+    cfg, news_filter = sidebar()
 
     # 未配置 token 时提示
     if cfg.get("data_source") == "tushare" and not cfg.get("tushare_token"):
@@ -400,10 +417,50 @@ def main():
             unsafe_allow_html=True
         )
 
+        # 持仓总览：一次性拉取所有股票的当前价和评分
         watchlist = get_watchlist()
-        if not watchlist:
-            st.info("自选股为空，请在左侧添加股票")
-        else:
+        if watchlist:
+            overview_cols = st.columns([1, 1, 1, 1])
+            total_count = len(watchlist)
+            total_close_sum = 0.0
+            total_ref_sum = 0.0
+            action_counts = {"ADD": 0, "HOLD": 0, "WAIT": 0, "EXIT": 0}
+            loaded = 0
+
+            for stock in watchlist:
+                try:
+                    df_temp = provider.get_daily(stock["ts_code"])
+                    if df_temp is None or len(df_temp) < 30:
+                        continue
+                    close = float(df_temp["close"].iloc[-1])
+                    ref = float(df_temp["close"].tail(30).min())
+                    total_close_sum += close
+                    total_ref_sum += ref
+                    res = analyze_stock(df_temp)
+                    if res:
+                        action_counts[res["action"]] = action_counts.get(res["action"], 0) + 1
+                    loaded += 1
+                except Exception:
+                    continue
+
+            # 参考整体盈亏
+            if loaded > 0 and total_ref_sum > 0:
+                avg_profit = (total_close_sum - total_ref_sum) / total_ref_sum * 100
+                profit_color = COLOR_UP if avg_profit >= 0 else COLOR_DOWN
+                profit_icon = "📈" if avg_profit >= 0 else "📉"
+                overview_cols[0].metric("自选股数量", f"{total_count} 只")
+                overview_cols[1].metric("已分析", f"{loaded} 只")
+                overview_cols[2].metric(
+                    "参考盈亏",
+                    f"{profit_icon} {avg_profit:+.1f}%",
+                    delta_color="normal" if avg_profit >= 0 else "inverse"
+                )
+                add_count = action_counts.get("ADD", 0) + action_counts.get("HOLD", 0)
+                overview_cols[3].metric("可操作信号", f"{add_count} 个")
+            else:
+                for col in overview_cols:
+                    col.metric("—", "加载中...")
+
             st.markdown("---")
             for stock in watchlist:
                 ts_code  = stock["ts_code"]
@@ -431,9 +488,10 @@ def main():
                     if new_pos != position:
                         update_position(ts_code, new_pos)
 
-                    # 最近资讯（后台缓存，加载更快）
+                    # 最近资讯（后台缓存，支持来源筛选）
                     with st.expander(f"📰 {name or ts_code} 最近资讯", expanded=False):
-                        news_list = cached_news(ts_code)
+                        all_news = cached_news(ts_code)
+                        news_list = _filter_news(all_news, news_filter)
                         if not news_list:
                             st.caption("暂无相关资讯")
                         else:
@@ -498,22 +556,74 @@ def main():
 
                     st.success(f"✅ 筛选完成，共找到 {len(df_top)} 只候选股")
                     display_cols = ["股票代码", "股票名称", "收盘价", "5日涨幅%", "量比", "趋势分", "动能分", "成交量分", "最终评分"]
-                    st.dataframe(
-                        df_top[display_cols].style.background_gradient(
-                            subset=["最终评分"], cmap="Reds"
-                        ),
-                        use_container_width=True
-                    )
 
-                    # 候选股资讯展示（后台缓存）
-                    st.markdown("### 📰 候选股资讯")
-                    st.caption("点击展开查看各股最近资讯（来源：东方财富）")
+                    # 评分热力：分数越高越红（涨），越低越绿（跌）
+                    def _color_score(val, max_val=100):
+                        if val >= 75:
+                            color = "#e53935"
+                            weight = 900
+                        elif val >= 50:
+                            color = "#fb8c00"
+                            weight = 600
+                        elif val >= 25:
+                            color = "#fdd835"
+                            weight = 400
+                        elif val > 0:
+                            color = "#81c784"
+                            weight = 400
+                        else:
+                            return "color:#999;font-weight:400"
+                        intensity = min(val / max_val, 1.0)
+                        r = int(229 - intensity * (229 - 100))
+                        g = int(57 - intensity * (57 - 193))
+                        b = int(53 - intensity * (53 - 120))
+                        return f"background:rgba({r},{g},{b},0.3);color:#333;font-weight:{weight}"
+                    score_cols = ["趋势分", "动能分", "成交量分", "最终评分"]
+
+                    def style_row(row):
+                        attrs = {}
+                        for col in score_cols:
+                            val = row.get(col, 0)
+                            attrs[col] = _color_score(val)
+                        return attrs
+
+                    # 候选股资讯批量缓存
                     news_map = cached_news_batch(df_top["股票代码"].tolist())
+
+                    # 逐行展示：卡片 + 热力 + 一键加入按钮
                     for _, row in df_top.iterrows():
                         code = row["股票代码"]
                         sname = row["股票名称"]
-                        news_list = news_map.get(code, [])
-                        with st.expander(f"📌 {code} {sname}", expanded=False):
+                        trend = row["趋势分"]
+                        mom = row["动能分"]
+                        vol = row["成交量分"]
+                        final = row["最终评分"]
+
+                        with st.container():
+                            c1, c2, c3, c4, c5, c6 = st.columns([1.2, 1.2, 0.9, 0.9, 0.9, 1.2])
+                            c1.markdown(f"**{code}**  {sname}")
+                            c2.metric("收盘价", f"¥{row['收盘价']:.2f}")
+                            c3.markdown(f"<div style='text-align:center;padding:4px 0'>"
+                                        f"<div style='background:#e53935;color:white;border-radius:4px;padding:2px 6px;font-size:12px'>{trend:.0f}分</div>"
+                                        f"<small>趋势</small></div>", unsafe_allow_html=True)
+                            c4.markdown(f"<div style='text-align:center;padding:4px 0'>"
+                                        f"<div style='background:#fb8c00;color:white;border-radius:4px;padding:2px 6px;font-size:12px'>{mom:.0f}分</div>"
+                                        f"<small>动能</small></div>", unsafe_allow_html=True)
+                            c5.markdown(f"<div style='text-align:center;padding:4px 0'>"
+                                        f"<div style='background:#1565c0;color:white;border-radius:4px;padding:2px 6px;font-size:12px'>{vol:.0f}分</div>"
+                                        f"<small>成交量</small></div>", unsafe_allow_html=True)
+                            c6.markdown(f"<div style='text-align:center;padding:4px 0'>"
+                                        f"<div style='background:#b71c1c;color:white;border-radius:6px;padding:6px 10px;font-size:15px;font-weight:bold'>{final:.1f}分</div>"
+                                        f"<small>综合评分</small></div>", unsafe_allow_html=True)
+
+                        # 按钮行：加入自选 + 资讯折叠
+                        col_btn, col_news = st.columns([1, 3])
+                        if col_btn.button(f"⭐ 加入自选", key=f"add_{code}"):
+                            add_stock(code, sname)
+                            col_btn.success(f"✅ 已加入 {sname}")
+                        with col_news.expander(f"📰 {code} {sname} 最新资讯", expanded=False):
+                            all_news = news_map.get(code, [])
+                            news_list = _filter_news(all_news, news_filter)
                             if not news_list:
                                 st.caption("暂无相关资讯")
                             else:
@@ -523,22 +633,12 @@ def main():
                                         f"<span style='color:#999;font-size:12px'>{news['time']} · {news['source']}</span>",
                                         unsafe_allow_html=True
                                     )
+                        st.markdown("---")
 
-                    st.markdown("---")
-                    selected = st.multiselect(
-                        "选择要加入自选股的股票",
-                        [f"{r['股票代码']} {r['股票名称']}" for _, r in df_top.iterrows()]
-                    )
-                    if st.button("⭐ 加入自选股"):
-                        for item in selected:
-                            code, *name_parts = item.split()
-                            add_stock(code, " ".join(name_parts))
-                        st.success(f"已添加 {len(selected)} 只")
-                        st.rerun()
-
+                    # 下载 CSV
                     csv = df_top.to_csv(index=False, encoding="utf-8-sig")
                     st.download_button(
-                        "💾 下载 CSV",
+                        "💾 下载筛选结果 CSV",
                         csv,
                         file_name=f"screening_{datetime.date.today()}.csv",
                         mime="text/csv"
@@ -548,49 +648,97 @@ def main():
                 st.error(f"筛选出错：{e}")
 
     # ────────────────────────────────────────
-    # Tab3：K线详情
+    # Tab3：K线详情（完整个股分析页）
     # ────────────────────────────────────────
     with tab3:
-        st.subheader("K线详情")
+        st.subheader("个股 K线分析")
 
         watchlist = get_watchlist()
         options = [""] + [f"{s['ts_code']} {s['name']}" for s in watchlist]
-        manual  = st.text_input("或直接输入股票代码（输入纯数字即可，如 600036）")
-        select  = st.selectbox("选择自选股", options)
+        manual  = st.text_input("输入股票代码（输入纯数字即可，如 600036）")
+        select  = st.selectbox("或从自选股选择", options)
 
         ts_code = normalize_ts_code(manual) if manual.strip() else (select.split()[0] if select else "")
         title   = select if select else ts_code
 
         if ts_code:
-            if st.button("📈 加载K线"):
-                with st.spinner(f"加载 {ts_code} 数据..."):
-                    try:
-                        df = provider.get_daily(ts_code)
-                        if df is None or df.empty:
-                            st.error("数据为空")
-                        else:
-                            fig = plot_kline(df, ts_code, title)
-                            st.pyplot(fig)
+            if st.button("🔍 分析该股票", type="primary"):
+                st.session_state["tab3_ts_code"] = ts_code
+                st.session_state["tab3_title"] = title
 
-                            # 显示当前分析结论
-                            result = analyze_stock(df)
-                            if result:
-                                action_name, explain, color = explain_action(result["action"])
+        # 记忆最后一次分析的股票
+        current_code = st.session_state.get("tab3_ts_code", "")
+        current_title = st.session_state.get("tab3_title", "")
+
+        if current_code:
+            with st.spinner(f"加载 {current_code} 数据..."):
+                try:
+                    df = provider.get_daily(current_code)
+                    if df is None or df.empty:
+                        st.error("数据为空，请检查股票代码是否正确")
+                    else:
+                        # 评分数据
+                        scores = score_stock(df)
+                        result = analyze_stock(df)
+                        action_name, explain, color = explain_action(result["action"])
+
+                        # 上半部分：雷达图 + 指标
+                        col_radar, col_metrics = st.columns([1.2, 2.8])
+                        with col_radar:
+                            radar_buf = plot_radar(
+                                scores["趋势分"], scores["动能分"], scores["成交量分"]
+                            )
+                            st.image(radar_buf, use_container_width=True)
+
+                        with col_metrics:
+                            m1, m2, m3, m4 = st.columns(4)
+                            m1.metric("收盘价", f"¥{scores['收盘价']:.2f}")
+                            m2.metric("MA5", f"¥{scores['ma5']:.2f}")
+                            m3.metric("MA10", f"¥{scores['ma10']:.2f}")
+                            m4.metric("MA20", f"¥{scores['ma20']:.2f}")
+
+                            # 信号徽章
+                            badge_html = (
+                                f"<div style='background:{color};color:white;padding:8px 20px;"
+                                f"border-radius:20px;text-align:center;font-weight:bold;"
+                                f"font-size:20px;letter-spacing:3px;"
+                                f"box-shadow:2px 2px 8px rgba(0,0,0,0.3)'>"
+                                f"{result['action']} {action_name}</div>"
+                            )
+                            st.markdown(badge_html, unsafe_allow_html=True)
+                            st.markdown(f"<small style='color:{color}'>{explain}</small>",
+                                        unsafe_allow_html=True)
+                            m5, m6, m7 = st.columns(3)
+                            m5.metric("趋势分", f"{scores['趋势分']:.0f}", delta="强" if scores["趋势分"] >= 30 else "弱", delta_color="off")
+                            m6.metric("动能分", f"{scores['动能分']:.0f}", delta="强" if scores["动能分"] >= 20 else "弱", delta_color="off")
+                            m7.metric("成交量分", f"{scores['成交量分']:.0f}", delta="活跃" if scores["成交量分"] >= 20 else "弱", delta_color="off")
+
+                        # K线图
+                        fig = plot_kline(df, current_code, current_title)
+                        st.pyplot(fig)
+
+                        # 加入自选按钮
+                        col_add, _ = st.columns([1, 5])
+                        if col_add.button(f"⭐ 加入自选", key=f"add_{current_code}"):
+                            add_stock(current_code, current_title)
+                            col_add.success("✅ 已加入自选")
+
+                        # 资讯
+                        st.markdown("#### 📰 最新资讯")
+                        all_news = cached_news(current_code)
+                        news_list = _filter_news(all_news, news_filter)
+                        if not news_list:
+                            st.caption("暂无相关资讯")
+                        else:
+                            for news in news_list:
                                 st.markdown(
-                                    f"**当前信号：**"
-                                    f"<span style='color:{color};font-weight:bold;font-size:18px'>"
-                                    f" {result['action']} {action_name}</span>"
-                                    f" — {explain}",
+                                    f"• [{news['title']}]({news['url']})  "
+                                    f"<span style='color:#999;font-size:12px'>{news['time']} · {news['source']}</span>",
                                     unsafe_allow_html=True
                                 )
-                                m1, m2, m3, m4 = st.columns(4)
-                                m1.metric("收盘价", f"¥{result['close']}")
-                                m2.metric("MA5",   f"¥{result['ma5']}")
-                                m3.metric("MA20",  f"¥{result['ma20']}")
-                                m4.metric("趋势",   "上升 ↑" if result["trend"] == "up" else "下降 ↓")
 
-                    except Exception as e:
-                        st.error(f"加载失败：{e}")
+                except Exception as e:
+                    st.error(f"加载失败：{e}")
 
 
 if __name__ == "__main__":
