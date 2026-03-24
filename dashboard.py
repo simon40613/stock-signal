@@ -91,6 +91,16 @@ def get_or_setup_config():
 # ─────────────────────────────────────────────────────────
 def sidebar():
     st.sidebar.title("📈 Stock Signal")
+    st.sidebar.markdown(
+        "<style>"
+        "section[data-testid='stSidebar'] .stTextInput input {"
+        "  border: 1.5px solid #555 !important;"
+        "  border-radius: 6px;"
+        "  background: #fff;"
+        "}"
+        "</style>",
+        unsafe_allow_html=True
+    )
     st.sidebar.markdown("---")
 
     # 配置区
@@ -271,11 +281,16 @@ def plot_mini_kline(df: pd.DataFrame, ts_code: str) -> io.BytesIO:
 def action_card(ts_code: str, name: str, result: dict, position: float, df: pd.DataFrame = None):
     action = result["action"]
     action_name, explain, color = explain_action(action)
-
-    trend = result.get("trend_score", 0)
-    momentum = result.get("momentum_score", 0)
-    volume_score = result.get("volume_score", 0)
     current_price = result["close"]
+
+    # 调用 score_stock 获取评分数据（analyze_stock 不返回这些字段）
+    scores = score_stock(df) if df is not None else None
+    if scores:
+        trend = scores["趋势分"]
+        momentum = scores["动能分"]
+        volume_score = scores["成交量分"]
+    else:
+        trend = momentum = volume_score = 0
 
     # 自动检测参考买入价：取近30日最低收盘价
     if df is not None and len(df) >= 5:
