@@ -61,6 +61,17 @@ def update_position(ts_code: str, position_ratio: float):
     print(f"⚠️ 未找到 {ts_code}")
 
 
+def update_buy_price(ts_code: str, buy_price: float):
+    """更新买入价（用于计算浮盈亏）"""
+    data = _load()
+    for s in data:
+        if s["ts_code"] == ts_code:
+            s["buy_price"] = buy_price
+            _save(data)
+            return
+    print(f"⚠️ 未找到 {ts_code}")
+
+
 def import_from_list(stock_list: list[dict]):
     """批量导入，stock_list 格式：[{ts_code, name}]"""
     data = _load()

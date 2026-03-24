@@ -5,6 +5,7 @@ Streamlit 可视化看板
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 import mplfinance as mpf
@@ -18,7 +19,7 @@ from core.data_source import get_provider
 from core.analyzer import get_market_state, analyze_stock, explain_action, score_stock
 from core.watchlist import (
     get_watchlist, add_stock, remove_stock,
-    update_position, import_from_list
+    update_position, update_buy_price, import_from_list
 )
 from core.news_crawler import fetch_news, fetch_news_batch
 
@@ -165,23 +166,126 @@ def plot_kline(df: pd.DataFrame, ts_code: str, title: str = "") -> plt.Figure:
 
 
 # ─────────────────────────────────────────────────────────
-# 操作建议卡片
+# 评分雷达图
 # ─────────────────────────────────────────────────────────
-def action_card(ts_code: str, name: str, result: dict, position: float):
+def plot_radar(trend: float, momentum: float, volume_score: float) -> plt.Figure:
+    """
+    绘制三维度评分雷达图
+    """
+    categories = ["趋势", "动能", "成交量"]
+    values = [trend, momentum, volume_score]
+    values += values[:1]  # 闭合多边形
+
+    angles = np.linspace(0, 2 * np.pi, len(categories), endpoint=False).tolist()
+    angles += angles[:1]
+
+    fig, ax = plt.subplots(figsize=(3.2, 3.2), subplot_kw=dict(polar=True))
+    ax.fill(angles, values, color=COLOR_UP, alpha=0.25)
+    ax.plot(angles, values, color=COLOR_UP, linewidth=2)
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(categories, fontsize=10)
+    ax.set_ylim(0, 100)
+    ax.set_yticks([25, 50, 75, 100], fontsize=7)
+    ax.set_yticklabels(["25", "50", "75", "100"], fontsize=7)
+    ax.set_title("评分雷达图", fontsize=11, pad=12)
+    fig.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────
+# 迷你K线图（嵌卡片内）
+# ─────────────────────────────────────────────────────────
+def plot_mini_kline(df: pd.DataFrame, ts_code: str) -> plt.Figure:
+    """
+    绘制迷你K线图（不显示成交量，节省空间）
+    """
+    df2 = df.tail(20).copy()
+    df2.index = pd.to_datetime(df2.index)
+    df2.columns = [c.capitalize() for c in df2.columns]
+
+    mc = mpf.make_marketcolors(up=COLOR_UP, down=COLOR_DOWN, edge="inherit", wick="inherit")
+    astyle = mpf.make_mpf_style(base_mpf_style="charles", marketcolors=mc)
+
+    fig, _ = mpf.plot(
+        df2,
+        type="candle",
+        style=astyle,
+        returnfig=True,
+        figsize=(4, 2.2),
+        title=f" {ts_code}",
+        show_nontrading=False,
+    )
+    fig.tight_layout(pad=0.5)
+    return fig
+
+
+# ─────────────────────────────────────────────────────────
+# 操作建议卡片（含雷达图 + 迷你K线）
+# ─────────────────────────────────────────────────────────
+def action_card(ts_code: str, name: str, result: dict, position: float,
+                buy_price: float, df: pd.DataFrame = None):
     action = result["action"]
     action_name, explain, color = explain_action(action)
 
-    col1, col2, col3, col4, col5 = st.columns([2, 1.5, 1.5, 1.5, 3])
-    col1.markdown(f"**{ts_code}** {name}")
-    col2.metric("收盘价", f"¥{result['close']}")
-    col3.metric("仓位", f"{position*100:.0f}%")
-    col4.markdown(
-        f"<div style='background:{color};color:white;padding:6px 12px;"
-        f"border-radius:6px;text-align:center;font-weight:bold;font-size:16px'>"
-        f"{action} {action_name}</div>",
-        unsafe_allow_html=True
+    # 信号徽章样式
+    badge_html = (
+        f"<div style='background:{color};color:white;padding:8px 16px;"
+        f"border-radius:20px;text-align:center;font-weight:bold;font-size:18px;"
+        f"letter-spacing:2px;box-shadow:2px 2px 8px rgba(0,0,0,0.2)'>"
+        f"{action} {action_name}</div>"
     )
-    col5.markdown(f"<small style='color:{color}'>{explain}</small>", unsafe_allow_html=True)
+
+    # 雷达图
+    trend = result.get("trend_score", 0)
+    momentum = result.get("momentum_score", 0)
+    volume_score = result.get("volume_score", 0)
+    radar_fig = plot_radar(trend, momentum, volume_score)
+
+    # 迷你K线
+    kline_fig = plot_mini_kline(df, ts_code) if df is not None else None
+
+    # 浮盈亏计算
+    current_price = result["close"]
+    if buy_price and buy_price > 0:
+        profit_pct = (current_price - buy_price) / buy_price * 100
+        pct_color = COLOR_UP if profit_pct >= 0 else COLOR_DOWN
+        profit_str = f"<b style='color:{pct_color}'>{'+' if profit_pct >= 0 else ''}{profit_pct:.2f}%</b>"
+    else:
+        profit_str = "—"
+
+    # 布局：左侧信息 + 信号 | 右侧雷达图 | 右下迷你K线
+    col_info, col_action, col_radar = st.columns([3, 1.5, 2.5])
+
+    with col_info:
+        st.markdown(f"**{ts_code}**  {name}")
+        st.metric("当前价", f"¥{current_price:.2f}")
+        st.caption(f"趋势 {trend:.0f}  动能 {momentum:.0f}  成交量 {volume_score:.0f}")
+
+    with col_action:
+        st.markdown(badge_html, unsafe_allow_html=True)
+        st.caption(f"仓位 {position*100:.0f}% | 浮盈亏 {profit_str}")
+        st.markdown(f"<small style='color:{color}'>{explain}</small>", unsafe_allow_html=True)
+
+    with col_radar:
+        st.pyplot(radar_fig)
+
+    if kline_fig is not None:
+        col_kline, _ = st.columns([2.5, 7.5])
+        with col_kline:
+            st.pyplot(kline_fig)
+
+
+# ─────────────────────────────────────────────────────────
+# 资讯缓存（避免重复请求，5分钟自动刷新）
+# ─────────────────────────────────────────────────────────
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_news(ts_code: str) -> list:
+    return fetch_news(ts_code, limit=3)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_news_batch(ts_codes: list) -> dict:
+    return fetch_news_batch(ts_codes, limit=3, delay=0.2)
 
 
 # ─────────────────────────────────────────────────────────
@@ -254,22 +358,29 @@ def main():
                     if market == "RISK" and result["action"] in ("ADD", "BUY"):
                         result["action"] = "WAIT"
 
-                    action_card(ts_code, name, result, position)
+                    action_card(ts_code, name, result, position, buy_price, df)
 
-                    # 仓位快速调整
-                    new_pos = st.slider(
+                    # 仓位 + 买入价快速调整
+                    col_pos, col_buy = st.columns([1, 1])
+                    new_pos = col_pos.slider(
                         f"{ts_code} 仓位", 0.0, 1.0, position, 0.05,
                         key=f"pos_{ts_code}",
-                        format="%.0f%%",
-                        label_visibility="collapsed"
+                        format="%.0f%%"
+                    )
+                    default_buy = stock.get("buy_price", 0.0) or 0.0
+                    new_buy = col_buy.number_input(
+                        f"{ts_code} 买入价", 0.0, 10000.0, default_buy, 0.01,
+                        key=f"buy_{ts_code}",
+                        format="%.2f"
                     )
                     if new_pos != position:
                         update_position(ts_code, new_pos)
+                    if abs(new_buy - default_buy) > 0.001:
+                        update_buy_price(ts_code, new_buy)
 
-                    # 最近资讯
+                    # 最近资讯（后台缓存，加载更快）
                     with st.expander(f"📰 {name or ts_code} 最近资讯", expanded=False):
-                        with st.spinner("加载资讯..."):
-                            news_list = fetch_news(ts_code, limit=3)
+                        news_list = cached_news(ts_code)
                         if not news_list:
                             st.caption("暂无相关资讯")
                         else:
@@ -341,13 +452,10 @@ def main():
                         use_container_width=True
                     )
 
-                    # 候选股资讯展示
+                    # 候选股资讯展示（后台缓存）
                     st.markdown("### 📰 候选股资讯")
                     st.caption("点击展开查看各股最近资讯（来源：东方财富）")
-                    with st.spinner("批量拉取资讯，请稍候..."):
-                        news_map = fetch_news_batch(
-                            df_top["股票代码"].tolist(), limit=3, delay=0.3
-                        )
+                    news_map = cached_news_batch(df_top["股票代码"].tolist())
                     for _, row in df_top.iterrows():
                         code = row["股票代码"]
                         sname = row["股票名称"]
