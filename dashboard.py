@@ -163,10 +163,18 @@ def sidebar():
         format_func=lambda x: x
     )
 
+    # 手动刷新资讯（每次点击清缓存）
+    if "news_refresh" not in st.session_state:
+        st.session_state["news_refresh"] = 0
+    if st.sidebar.button("🔄 刷新资讯", use_container_width=True):
+        st.cache_data.clear()
+        st.session_state["news_refresh"] += 1
+        st.rerun()
+
     st.sidebar.markdown("---")
     st.sidebar.caption(f"更新时间：{datetime.datetime.now().strftime('%H:%M:%S')}")
 
-    return load_config(), news_source_filter
+    return load_config(), news_source_filter, st.session_state["news_refresh"]
 
 
 # ─────────────────────────────────────────────────────────
@@ -363,12 +371,14 @@ def action_card(ts_code: str, name: str, result: dict, position: float, df: pd.D
 # 资讯缓存（避免重复请求，5分钟自动刷新）
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=300, show_spinner=False)
-def cached_news(ts_code: str) -> list:
+def cached_news(ts_code: str, _refresh: int = 0) -> list:
+    """_refresh 为 0 时用缓存，非 0 时强制重新拉取"""
     return fetch_news(ts_code, limit=5)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def cached_news_batch(ts_codes: list) -> dict:
+def cached_news_batch(ts_codes: list, _refresh: int = 0) -> dict:
+    """_refresh 为 0 时用缓存，非 0 时强制重新拉取"""
     return fetch_news_batch(ts_codes, limit=5, delay=0.2)
 
 
@@ -383,7 +393,7 @@ def _filter_news(news_list: list, sources: list) -> list:
 # 主页面
 # ─────────────────────────────────────────────────────────
 def main():
-    cfg, news_filter = sidebar()
+    cfg, news_filter, news_refresh = sidebar()
 
     # 未配置 token 时提示
     if cfg.get("data_source") == "tushare" and not cfg.get("tushare_token"):
@@ -730,7 +740,7 @@ def main():
 
                         # 资讯
                         st.markdown("#### 📰 最新资讯")
-                        all_news = cached_news(current_code)
+                        all_news = cached_news(current_code, news_refresh)
                         news_list = _filter_news(all_news, news_filter)
                         if not news_list:
                             st.caption("暂无相关资讯")
