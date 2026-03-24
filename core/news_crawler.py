@@ -37,71 +37,33 @@ def _ts_to_em_code(ts_code: str) -> str:
 
 def fetch_news(ts_code: str, limit: int = 3) -> List[Dict]:
     """
-    获取指定股票最近 N 条资讯
+    获取指定股票最近 N 条资讯（东方财富新闻流）
 
     :param ts_code: Tushare 格式股票代码，如 '600036.SH'
     :param limit:   返回条数，默认 3
     :return: list of dict，每条包含 title / time / url / source
-
-    返回示例：
-    [
-        {
-            "title": "招商银行：一季度营收同比增长...",
-            "time":  "2026-03-24 10:15:00",
-            "url":   "https://finance.eastmoney.com/...",
-            "source": "东方财富网"
-        },
-        ...
-    ]
     若请求失败，返回空列表，不抛异常。
     """
-    try:
-        em_code = _ts_to_em_code(ts_code)
-        url = (
-            "https://np-anotice-stock.eastmoney.com/api/security/ann"
-            f"?sr=-1&page_size={limit}&page_index=1"
-            f"&ann_type=A&client_source=web&stock_list={em_code}"
-        )
-        resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-
-        items = data.get("data", {}).get("list", [])
-        results = []
-        for item in items[:limit]:
-            results.append({
-                "title":  item.get("NOTICE_TITLE", "无标题"),
-                "time":   item.get("NOTICE_DATE", "")[:16].replace("T", " "),
-                "url":    f"https://www.eastmoney.com/a/{item.get('ANN_ID', '')}.html",
-                "source": "东方财富·公告",
-            })
-        if results:
-            return results
-
-        # 公告接口没数据，尝试新闻接口
-        return _fetch_news_fallback(ts_code, limit)
-
-    except Exception:
-        return _fetch_news_fallback(ts_code, limit)
+    return _fetch_news_fallback(ts_code, limit)
 
 
 def _fetch_news_fallback(ts_code: str, limit: int = 3) -> List[Dict]:
     """
-    备用接口：东方财富股票新闻流
+    主接口：东方财富股票新闻流（字段已按实际接口校准）
     """
     try:
         code = ts_code.split(".")[0]
         market = ts_code.split(".")[1].upper()
-        # 东方财富新闻列表接口
+        prefix = "1" if market == "SH" else "0"
         url = (
             "https://np-listapi.eastmoney.com/comm/wap/getListInfo"
-            f"?cb=cb&client=wap&type=1&mTypeAndCode={(1 if market == 'SH' else 0)}.{code}"
+            f"?cb=cb&client=wap&type=1&mTypeAndCode={prefix}.{code}"
             f"&pageSize={limit}&pageIndex=1&_={int(time.time() * 1000)}"
         )
         resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
         text = resp.text
-        # 去掉 JSONP 包裹
-        if text.startswith("cb("):
+        # 去掉 JSONP 包裹（有时不带，兼容两种格式）
+        if text.startswith("cb(") and text.endswith(")"):
             text = text[3:-1]
         import json
         data = json.loads(text)
@@ -109,10 +71,10 @@ def _fetch_news_fallback(ts_code: str, limit: int = 3) -> List[Dict]:
         results = []
         for item in items[:limit]:
             results.append({
-                "title":  item.get("title", "无标题"),
-                "time":   item.get("datetime", "")[:16],
-                "url":    item.get("url", ""),
-                "source": item.get("mediaName", "东方财富"),
+                "title":  item.get("Art_Title", "无标题"),
+                "time":   item.get("Art_ShowTime", "")[:16],
+                "url":    item.get("Art_Url", ""),
+                "source": item.get("Art_MediaName", "东方财富"),
             })
         return results
     except Exception:
