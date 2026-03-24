@@ -11,6 +11,7 @@ import matplotlib
 import mplfinance as mpf
 import datetime
 import time
+import io
 from pathlib import Path
 from stqdm import stqdm
 
@@ -19,7 +20,7 @@ from core.data_source import get_provider
 from core.analyzer import get_market_state, analyze_stock, explain_action, score_stock
 from core.watchlist import (
     get_watchlist, add_stock, remove_stock,
-    update_position, update_buy_price, import_from_list
+    update_position, import_from_list
 )
 from core.news_crawler import fetch_news, fetch_news_batch
 
@@ -170,32 +171,51 @@ def plot_kline(df: pd.DataFrame, ts_code: str, title: str = "") -> plt.Figure:
 # ─────────────────────────────────────────────────────────
 def plot_radar(trend: float, momentum: float, volume_score: float) -> plt.Figure:
     """
-    绘制三维度评分雷达图
+    绘制三维度评分雷达图（紧凑版，带数值标注）
     """
     categories = ["趋势", "动能", "成交量"]
     values = [trend, momentum, volume_score]
-    values += values[:1]  # 闭合多边形
+    values_closed = values + [values[0]]
 
     angles = np.linspace(0, 2 * np.pi, len(categories), endpoint=False).tolist()
-    angles += angles[:1]
+    angles_closed = angles + [angles[0]]
 
-    fig, ax = plt.subplots(figsize=(3.2, 3.2), subplot_kw=dict(polar=True))
-    ax.fill(angles, values, color=COLOR_UP, alpha=0.25)
-    ax.plot(angles, values, color=COLOR_UP, linewidth=2)
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(categories, fontsize=10)
+    fig, ax = plt.subplots(figsize=(2.2, 2.2), subplot_kw=dict(polar=True))
+    ax.fill(angles_closed, values_closed, color=COLOR_UP, alpha=0.25)
+    ax.plot(angles_closed, values_closed, color=COLOR_UP, linewidth=2)
+    ax.set_xticks(angles)
+    ax.set_xticklabels(categories, fontsize=9)
     ax.set_ylim(0, 100)
-    ax.set_yticks([25, 50, 75, 100], fontsize=7)
-    ax.set_yticklabels(["25", "50", "75", "100"], fontsize=7)
-    ax.set_title("评分雷达图", fontsize=11, pad=12)
-    fig.tight_layout()
-    return fig
+    ax.set_yticks([25, 50, 75, 100])
+    ax.tick_params(axis="y", labelsize=7)
+
+    # 每个轴端点标注分数
+    for angle, val, cat in zip(angles, values, categories):
+        ax.annotate(
+            f"{val:.0f}",
+            xy=(angle, val),
+            xytext=(angle, val + 8),
+            textcoords="data",
+            fontsize=9,
+            ha="center",
+            fontweight="bold",
+            color=COLOR_UP,
+        )
+    fig.tight_layout(pad=0.3)
+
+    # 用 BytesIO 固定宽度渲染，避免被 Streamlit 列撑大
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=80, bbox_inches="tight",
+                facecolor="none", transparent=True)
+    buf.seek(0)
+    plt.close(fig)
+    return buf
 
 
 # ─────────────────────────────────────────────────────────
 # 迷你K线图（嵌卡片内）
 # ─────────────────────────────────────────────────────────
-def plot_mini_kline(df: pd.DataFrame, ts_code: str) -> plt.Figure:
+def plot_mini_kline(df: pd.DataFrame, ts_code: str) -> io.BytesIO:
     """
     绘制迷你K线图（不显示成交量，节省空间）
     """
@@ -216,63 +236,70 @@ def plot_mini_kline(df: pd.DataFrame, ts_code: str) -> plt.Figure:
         show_nontrading=False,
     )
     fig.tight_layout(pad=0.5)
-    return fig
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=80, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    buf.seek(0)
+    plt.close(fig)
+    return buf
 
 
 # ─────────────────────────────────────────────────────────
 # 操作建议卡片（含雷达图 + 迷你K线）
 # ─────────────────────────────────────────────────────────
-def action_card(ts_code: str, name: str, result: dict, position: float,
-                buy_price: float, df: pd.DataFrame = None):
+def action_card(ts_code: str, name: str, result: dict, position: float, df: pd.DataFrame = None):
     action = result["action"]
     action_name, explain, color = explain_action(action)
 
-    # 信号徽章样式
-    badge_html = (
-        f"<div style='background:{color};color:white;padding:8px 16px;"
-        f"border-radius:20px;text-align:center;font-weight:bold;font-size:18px;"
-        f"letter-spacing:2px;box-shadow:2px 2px 8px rgba(0,0,0,0.2)'>"
-        f"{action} {action_name}</div>"
-    )
-
-    # 雷达图
     trend = result.get("trend_score", 0)
     momentum = result.get("momentum_score", 0)
     volume_score = result.get("volume_score", 0)
-    radar_fig = plot_radar(trend, momentum, volume_score)
-
-    # 迷你K线
-    kline_fig = plot_mini_kline(df, ts_code) if df is not None else None
-
-    # 浮盈亏计算
     current_price = result["close"]
-    if buy_price and buy_price > 0:
-        profit_pct = (current_price - buy_price) / buy_price * 100
+
+    # 自动检测参考买入价：取近30日最低收盘价
+    if df is not None and len(df) >= 5:
+        ref_price = float(df["close"].tail(30).min())
+        profit_pct = (current_price - ref_price) / ref_price * 100
         pct_color = COLOR_UP if profit_pct >= 0 else COLOR_DOWN
-        profit_str = f"<b style='color:{pct_color}'>{'+' if profit_pct >= 0 else ''}{profit_pct:.2f}%</b>"
+        profit_str = f"<b style='color:{pct_color}'>{'+' if profit_pct >= 0 else ''}{profit_pct:.1f}%</b>"
     else:
         profit_str = "—"
 
-    # 布局：左侧信息 + 信号 | 右侧雷达图 | 右下迷你K线
-    col_info, col_action, col_radar = st.columns([3, 1.5, 2.5])
+    # 信号徽章
+    badge_html = (
+        f"<div style='background:{color};color:white;padding:8px 18px;"
+        f"border-radius:20px;text-align:center;font-weight:bold;font-size:17px;"
+        f"letter-spacing:3px;box-shadow:2px 2px 8px rgba(0,0,0,0.2)'>"
+        f"{action} {action_name}</div>"
+    )
 
-    with col_info:
+    # 左侧：股票信息 + 信号
+    # 右侧：K线图 + 雷达图并排
+    col_left, col_right = st.columns([1, 1.6])
+
+    with col_left:
         st.markdown(f"**{ts_code}**  {name}")
         st.metric("当前价", f"¥{current_price:.2f}")
-        st.caption(f"趋势 {trend:.0f}  动能 {momentum:.0f}  成交量 {volume_score:.0f}")
-
-    with col_action:
         st.markdown(badge_html, unsafe_allow_html=True)
-        st.caption(f"仓位 {position*100:.0f}% | 浮盈亏 {profit_str}")
+        st.markdown(
+            f"<small style='color:#666'>趋势 <b>{trend:.0f}</b>"
+            f"  动能 <b>{momentum:.0f}</b>"
+            f"  成交量 <b>{volume_score:.0f}</b></small>",
+            unsafe_allow_html=True
+        )
         st.markdown(f"<small style='color:{color}'>{explain}</small>", unsafe_allow_html=True)
+        st.caption(f"仓位 {position*100:.0f}%  |  参考盈亏 {profit_str}")
 
-    with col_radar:
-        st.pyplot(radar_fig)
-
-    if kline_fig is not None:
-        col_kline, _ = st.columns([2.5, 7.5])
+    with col_right:
+        radar_buf = plot_radar(trend, momentum, volume_score)
+        kline_buf = plot_mini_kline(df, ts_code) if df is not None else None
+        col_kline, col_radar = st.columns([1.4, 1])
         with col_kline:
-            st.pyplot(kline_fig)
+            if kline_buf:
+                st.image(kline_buf, use_container_width=True)
+        with col_radar:
+            st.image(radar_buf, use_container_width=True)
 
 
 # ─────────────────────────────────────────────────────────
@@ -358,25 +385,16 @@ def main():
                     if market == "RISK" and result["action"] in ("ADD", "BUY"):
                         result["action"] = "WAIT"
 
-                    action_card(ts_code, name, result, position, buy_price, df)
+                    action_card(ts_code, name, result, position, df)
 
-                    # 仓位 + 买入价快速调整
-                    col_pos, col_buy = st.columns([1, 1])
-                    new_pos = col_pos.slider(
+                    # 仓位快速调整
+                    new_pos = st.slider(
                         f"{ts_code} 仓位", 0.0, 1.0, position, 0.05,
                         key=f"pos_{ts_code}",
                         format="%.0f%%"
                     )
-                    default_buy = stock.get("buy_price", 0.0) or 0.0
-                    new_buy = col_buy.number_input(
-                        f"{ts_code} 买入价", 0.0, 10000.0, default_buy, 0.01,
-                        key=f"buy_{ts_code}",
-                        format="%.2f"
-                    )
                     if new_pos != position:
                         update_position(ts_code, new_pos)
-                    if abs(new_buy - default_buy) > 0.001:
-                        update_buy_price(ts_code, new_buy)
 
                     # 最近资讯（后台缓存，加载更快）
                     with st.expander(f"📰 {name or ts_code} 最近资讯", expanded=False):
